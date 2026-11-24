@@ -1,0 +1,90 @@
+/**
+ * Generates the github-runner README banners. Text is rendered at the origin and
+ * placed with <g transform>, because opentype.js produces NaN at a large
+ * absolute x.
+ * The name is set in Bree Serif Light and the claim in Bree Light, read as TTF
+ * from HOUSE_FONTS (default %LOCALAPPDATA%\halleluja-fonts).
+ * Run: node .github/assets/gen-banner.mjs
+ */
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
+import { execSync } from "node:child_process";
+
+const require = createRequire(import.meta.url);
+const groot = execSync("npm root -g").toString().trim();
+const opentype = require(`${groot}/opentype.js`);
+const { Resvg } = require(`${groot}/@resvg/resvg-js`);
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+// The house typeface is licensed, so it is read from a local folder and never committed.
+const fonts = process.env.HOUSE_FONTS ?? join(process.env.LOCALAPPDATA ?? tmpdir(), "halleluja-fonts");
+function font(file) {
+  const b = readFileSync(join(fonts, file));
+  return opentype.parse(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
+}
+const bree = font("bree-serif-light.ttf");
+const claimFont = font("bree-light.ttf");
+const bbox = (svg) => new Resvg(svg, { fitTo: { mode: "original" } }).getBBox();
+
+// icon.svg is the GitHub Octocat in pink. The name
+// is typeset here, as on every other repo's banner.
+const W = 1600, H = 500, LOGO_INK = 400, LOGO_X = 165, GAP_LOGO_TEXT = 70, GAP_NAME_CLAIM = 16, CLAIM_CAP = 44, RIGHT_PAD = 120;
+// fitClaim shrinks the claim as it gets wider, so a long sentence ends up at
+// 29px instead of 44px and looks lost next to the name. Keep it short.
+const NAME = "GitHub-Runner", CLAIM = "One container, a runner per repo.";
+
+const iconSrc = readFileSync(join(HERE, "icon.svg"), "utf8");
+const iconInner = iconSrc.replace(/^[\s\S]*?<svg[^>]*>/, "").replace(/<\/svg>\s*$/, "");
+const iconVb = { x: 0, y: 0, w: 512, h: 512 };
+
+const mb = bbox(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${iconVb.x} ${iconVb.y} ${iconVb.w} ${iconVb.h}">${iconInner}</svg>`);
+const sM = LOGO_INK / Math.max(mb.width, mb.height);
+const markW = mb.width * sM, markH = mb.height * sM;
+const markTX = LOGO_X - mb.x * sM, markTY = H / 2 - markH / 2 - mb.y * sM;
+const textX = LOGO_X + markW + GAP_LOGO_TEXT;
+const maxNameW = W - textX - RIGHT_PAD;
+
+// Cap height is measured on H, not G: the G overshoots at top and bottom and
+// would set the name 3.6 percent smaller than the shared wrapper generator does.
+let ns = 110 / (bbox(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400"><path d="${bree.getPath("H", 0, 300, 200).toPathData(2)}" fill="#000"/></svg>`).height / 200);
+const adv = bree.getAdvanceWidth(NAME, ns);
+if (adv > maxNameW) ns = ns * maxNameW / adv;
+// The same opentype.js NaN that fitClaim steps around can hit a single glyph of
+// the name at some sizes, and the name is then cut off at that letter.
+while ([0, 500].some((y) => bree.getPath(NAME, 0, y, ns).toPathData(2).includes("NaN"))) ns -= 0.25;
+const nameD = bree.getPath(NAME, 0, 0, ns).toPathData(2);
+const nb = bbox(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 5000 800"><path d="${bree.getPath(NAME, 0, 500, ns).toPathData(2)}" fill="#000"/></svg>`);
+const nameH = nb.height, nameInkTop = nb.y - 500;
+
+function fitClaim(text, maxW, cap) {
+  let size = Math.min(cap, Math.floor((100 * maxW) / claimFont.getAdvanceWidth(text, 100)));
+  for (; size > 10; size--) if (!claimFont.getPath(text, 0, 0, size).toPathData(2).includes("NaN")) return size;
+  return 10;
+}
+const claimSize = fitClaim(CLAIM, maxNameW, CLAIM_CAP);
+const claimAsc = claimFont.ascender * (claimSize / claimFont.unitsPerEm), claimDesc = -claimFont.descender * (claimSize / claimFont.unitsPerEm);
+const groupH = nameH + GAP_NAME_CLAIM + claimAsc + claimDesc;
+const top = H / 2 - groupH / 2;
+const claimBaseline = Math.round(top + nameH + GAP_NAME_CLAIM + claimAsc);
+const claimD = claimFont.getPath(CLAIM, 0, 0, claimSize).toPathData(2);
+
+const THEMES = [
+  { suf: "", bg: "#ffffff", name: "#1f2328", claim: "#5a5d5e" },
+  { suf: "-dark", bg: "#0d1117", name: "#e6edf3", claim: "#9aa4ad" },
+];
+for (const t of THEMES) {
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="GitHub-Runner">
+  <rect width="${W}" height="${H}" fill="${t.bg}"/>
+  <g transform="translate(${markTX.toFixed(2)},${markTY.toFixed(2)}) scale(${sM.toFixed(5)})">${iconInner}</g>
+  <g transform="translate(${textX.toFixed(2)},${(top - nameInkTop).toFixed(2)})"><path d="${nameD}" fill="${t.name}"/></g>
+  <g transform="translate(${textX.toFixed(2)},${claimBaseline})"><path d="${claimD}" fill="${t.claim}"/></g>
+</svg>
+`;
+  writeFileSync(join(HERE, `banner${t.suf}.svg`), svg);
+  writeFileSync(join(HERE, `banner${t.suf}.png`), new Resvg(svg, { background: t.bg, fitTo: { mode: "original" } }).render().asPng());
+}
+console.log("banner + banner-dark written");

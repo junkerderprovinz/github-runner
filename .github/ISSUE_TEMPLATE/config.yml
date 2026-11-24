@@ -1,0 +1,7 @@
+# A template that turns someone away is worse than a report in the wrong shape;
+# the shape can be asked for afterwards.
+blank_issues_enabled: true
+contact_links:
+  - name: Question rather than a bug
+    url: https://github.com/junkerderprovinz/github-runner/issues/new
+    about: Open a plain issue and ask. Questions are welcome here, they are not off topic.

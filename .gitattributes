@@ -1,0 +1,6 @@
+# Shell scripts and the init banner run on Linux, so they are always stored and
+# checked out with LF.
+*.sh text eol=lf
+.github/assets/banner-raw.txt text eol=lf
+rootfs/** text eol=lf
+.github/assets/*.svg text eol=lf

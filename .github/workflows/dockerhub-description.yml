@@ -1,0 +1,29 @@
+# Pushes the README to the Docker Hub Overview. The image build does not sync
+# it, so after a README change the Overview stays as it was until this runs. It
+# builds nothing, so a red run points at the credential.
+name: Docker Hub description
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync README to Docker Hub
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # No gate and no continue-on-error: a missing secret or a refused login
+      # should turn this run red.
+      - name: Sync README to Docker Hub
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ vars.DOCKERHUB_USERNAME }}/github-runner
+          short-description: "Self-hosted GitHub Actions runners for several repositories of a personal account in one container"
+          enable-url-completion: true

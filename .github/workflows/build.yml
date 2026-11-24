@@ -1,0 +1,247 @@
+# Builds the amd64 and arm64 image, tags it latest and with the runner version
+# of the base image pinned in the Dockerfile, and pushes it to GHCR, and to
+# Docker Hub once the DOCKERHUB_USERNAME variable and the DOCKERHUB_TOKEN secret
+# are both set. Renovate bumps the base image.
+# The weekly cron and a manual run build without the layer cache, so latest
+# picks up base image updates.
+
+name: Build & Push Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild even if image already exists for this tag'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'LICENSE']
+  # A pull request builds and smoke-tests the image but pushes nothing.
+  pull_request:
+    branches: [main]
+    paths-ignore: ['**.md', 'LICENSE']
+  schedule:
+    - cron: '40 7 * * 0'
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/junkerderprovinz/github-runner
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build-and-push:
+    name: Build & Push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Read the runner version from the Dockerfile
+        id: ver
+        run: |
+          TAG=$(grep -m1 '^FROM myoung34/github-runner:' Dockerfile | sed -E 's/.*:([0-9][0-9.]*)-.*/\1/')
+          if ! [[ "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::Could not read the runner version from the Dockerfile"; exit 1; fi
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "Runner version: ${TAG}"
+
+      - name: Check if image already exists
+        id: check
+        run: |
+          IMAGE="${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.tag }}"
+          SKIP="false"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.force_rebuild }}" != "true" ] \
+            && docker manifest inspect "${IMAGE}" > /dev/null 2>&1; then
+            echo "Image ${IMAGE} already exists, skipping build."
+            SKIP="true"
+          fi
+          echo "skip=${SKIP}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        if: steps.check.outputs.skip != 'true' && github.event_name != 'pull_request'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        if: steps.check.outputs.skip != 'true' && vars.DOCKERHUB_USERNAME != '' && github.event_name != 'pull_request'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up QEMU
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Compose image tags
+        id: tags
+        if: steps.check.outputs.skip != 'true'
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE_NAME}:latest"
+            echo "${IMAGE_NAME}:${TAG}"
+            if [ -n "${DOCKERHUB_USERNAME}" ]; then
+              echo "docker.io/${DOCKERHUB_USERNAME}/github-runner:latest"
+              echo "docker.io/${DOCKERHUB_USERNAME}/github-runner:${TAG}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build amd64 image for smoke test
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: github-runner:smoke-amd64
+          cache-from: type=gha
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+
+      # A wrong setting must stop the container with one clear line, not leave it
+      # restarting forever without saying why.
+      - name: "Smoke test: clear errors for missing settings"
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          expect_exit() {
+            local want=$1; shift
+            docker rm -f gr-smoke >/dev/null 2>&1 || true
+            docker run -d --name gr-smoke "$@" github-runner:smoke-amd64 >/dev/null
+            for _ in $(seq 1 20); do
+              [ "$(docker inspect -f '{{.State.Status}}' gr-smoke)" = "exited" ] && break
+              sleep 1
+            done
+            [ "$(docker inspect -f '{{.State.Status}}' gr-smoke)" = "exited" ] \
+              || { echo "::error::Expected the container to stop: $want"; docker logs gr-smoke; exit 1; }
+            grep -q "$want" <<< "$(docker logs gr-smoke 2>&1)" \
+              || { echo "::error::The container stopped without saying: $want"; docker logs gr-smoke; exit 1; }
+            echo "OK: $want"
+          }
+          expect_exit "ACCESS_TOKEN is empty"
+          expect_exit "RUNNER_REPOS is empty" -e ACCESS_TOKEN=x
+          expect_exit "has no owner" -e ACCESS_TOKEN=x -e RUNNER_REPOS=lonely
+          grep -q "one runner per repository" <<< "$(docker logs gr-smoke 2>&1)" \
+            || { echo "::error::The init-log banner is missing"; exit 1; }
+
+          # A token GitHub rejects keeps the container up and retrying, so a
+          # fixed token needs no restart.
+          docker rm -f gr-smoke >/dev/null
+          docker run -d --name gr-smoke -e ACCESS_TOKEN=invalid -e RUNNER_REPOS=octocat/Hello-World \
+            -e RETRY_SECONDS=5 github-runner:smoke-amd64 >/dev/null
+          sleep 15
+          [ "$(docker inspect -f '{{.State.Status}}' gr-smoke)" = "running" ] \
+            || { echo "::error::A rejected token stopped the container"; docker logs gr-smoke; exit 1; }
+          grep -q "was rejected (401)" <<< "$(docker logs gr-smoke 2>&1)" \
+            || { echo "::error::A rejected token was not reported"; docker logs gr-smoke; exit 1; }
+          docker rm -f gr-smoke >/dev/null
+          echo "Setting checks passed."
+
+      # Registers a runner in each test repository, waits until GitHub shows
+      # them online, and checks that a stop removes them. The runners carry only
+      # the run's own label, so no real job can land on them. Needs the token
+      # secret, which pull requests never get.
+      - name: "Smoke test: register, run and deregister"
+        if: steps.check.outputs.skip != 'true' && github.event_name != 'pull_request'
+        env:
+          TOKEN: ${{ secrets.RUNNER_TEST_TOKEN }}
+          REPOS: ${{ vars.RUNNER_TEST_REPOS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TOKEN}" ] || [ -z "${REPOS}" ]; then
+            echo "::warning::RUNNER_TEST_TOKEN or RUNNER_TEST_REPOS is not set, the registration test is skipped"
+            exit 0
+          fi
+          NAME="smoke-${GITHUB_RUN_ID}"
+          cleanup() { docker logs gr-live 2>&1 | tail -40 || true; docker rm -f gr-live >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run -d --name gr-live -e ACCESS_TOKEN="${TOKEN}" -e RUNNER_REPOS="${REPOS}" \
+            -e RUNNER_NAME="${NAME}" -e LABELS="${NAME}" -e NO_DEFAULT_LABELS=true github-runner:smoke-amd64 >/dev/null
+
+          status_in() {
+            curl -fsS -H "Authorization: Bearer ${TOKEN}" "https://api.github.com/repos/$1/actions/runners" \
+              | jq -r --arg n "${NAME}" '.runners[] | select(.name == $n) | .status'
+          }
+          for repo in ${REPOS//,/ }; do
+            ok=""
+            for _ in $(seq 1 60); do
+              [ "$(status_in "$repo")" = "online" ] && { ok=1; break; }
+              sleep 3
+            done
+            [ -n "$ok" ] || { echo "::error::No online runner ${NAME} in ${repo}"; exit 1; }
+            echo "Online in ${repo}"
+          done
+          [ "$(docker inspect -f '{{.State.Health.Status}}' gr-live)" != "unhealthy" ] \
+            || { echo "::error::The health check reports unhealthy with every runner online"; exit 1; }
+
+          docker stop -t 60 gr-live >/dev/null
+          for repo in ${REPOS//,/ }; do
+            [ -z "$(status_in "$repo")" ] \
+              || { echo "::error::The runner ${NAME} is still registered in ${repo} after a stop"; exit 1; }
+            echo "Deregistered from ${repo}"
+          done
+          echo "Registration test passed."
+
+      # arm64 is published too. This checks what differs between architectures:
+      # that the image starts and its runner binary runs.
+      - name: Build arm64 image for a start check
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
+          load: true
+          tags: github-runner:smoke-arm64
+          cache-from: type=gha
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+
+      - name: Start check on arm64
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/arm64 --entrypoint /actions-runner/bin/Runner.Listener \
+            github-runner:smoke-arm64 --version
+          out=$(docker run --rm --platform linux/arm64 github-runner:smoke-arm64 2>&1 || true)
+          grep -q "ACCESS_TOKEN is empty" <<< "${out}" \
+            || { echo "::error::The arm64 image did not start its script"; echo "${out}"; exit 1; }
+          echo "arm64 starts."
+
+      - name: Stamp the build time
+        id: stamp
+        run: echo "now=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push multi-arch image
+        if: steps.check.outputs.skip != 'true' && github.event_name != 'pull_request'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          # The commit and build time are only known here, and the revision
+          # label traces a published image back to its source.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.stamp.outputs.now }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
