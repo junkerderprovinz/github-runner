@@ -13,7 +13,8 @@ STATE_DIR=/run/github-runner
 API=https://api.github.com
 export RUNNER_ALLOW_RUNASROOT=1
 
-log() { printf '[github-runner] %s\n' "$*"; }
+# Messages go to stderr, so a function whose output is captured can still report.
+log() { printf '[github-runner] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
 /usr/local/bin/print-banner.sh "GitHub-Runner" "one runner per repository"
