@@ -146,6 +146,6 @@ You do not have to take my word for it. The code is open and every release note 
 
 <br>
 
-Questions? Check the [support thread](https://forums.unraid.net/topic/198811-support-junkerderprovinz-unraid-apps/). Bugs, ideas or feature requests? Please [open a GitHub issue](https://github.com/junkerderprovinz/github-runner/issues).
+Questions, bugs, ideas or feature requests? Please [open a GitHub issue](https://github.com/junkerderprovinz/github-runner/issues).
 
 <sub>The runner image is made by myoung34 and the GitHub Actions runner by GitHub. Both ship here unmodified. GitHub and the Octocat are trademarks of GitHub, Inc. This project is not affiliated with GitHub.</sub>
