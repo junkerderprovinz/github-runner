@@ -11,11 +11,12 @@ services:
     container_name: github-runner
     restart: unless-stopped
     stop_grace_period: 60s
+    ports:
+      - "8080:8080"
     volumes:
+      - "./appdata:/config"
       - "/var/run/docker.sock:/var/run/docker.sock"
     environment:
-      ACCESS_TOKEN: ""  # required
-      RUNNER_REPOS: ""  # required
       RUNNER_NAME: GitHub-Runner
       LABELS: self-hosted
       NO_DEFAULT_LABELS: "false"
