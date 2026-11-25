@@ -14,7 +14,8 @@
 Self-hosted <b>GitHub Actions runners</b> for several repositories in <b>one container</b>.
 A personal GitHub account can attach a runner to a single repository only, so the
 usual images need one container per repository. This one starts a runner for every
-repository you list, and removes them from GitHub again when it stops.
+repository you add, shows them all in a web interface, and removes them from GitHub
+again when it stops.
 </p>
 
 <br>
@@ -80,7 +81,12 @@ If it has earned a place on your server or computer, toss a coin to your knight:
 
 <p><a id="3-what-it-looks-like" href="#3-what-it-looks-like"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/sections/3-what-it-looks-like-dark.svg"><img src=".github/assets/sections/3-what-it-looks-like.svg" alt="3. What it looks like" width="100%"></picture></a></p>
 
-The repository names in this picture are made up.
+The repository names in these pictures are made up.
+
+<p align="center">
+  <img src=".github/assets/screenshots/github-runner-2.png" alt="The web interface: one card per repository with its state, and below a line per repository with the jobs of the last two hours as stops" width="100%">
+  <br><em>The web interface: two runners at work, two waiting, and one repository the token may not manage</em>
+</p>
 
 <p align="center">
   <img src=".github/assets/screenshots/github-runner-1.png" alt="The container log after a start: the banner, then three repositories each registered and listening for jobs" width="100%">
@@ -91,14 +97,16 @@ The repository names in this picture are made up.
 
 <p><a id="4-what-it-does" href="#4-what-it-does"><picture><source media="(prefers-color-scheme: dark)" srcset=".github/assets/sections/4-what-it-does-dark.svg"><img src=".github/assets/sections/4-what-it-does.svg" alt="4. What it does" width="100%"></picture></a></p>
 
-- **One container, many repositories.** List them in `RUNNER_REPOS` and each one gets its own runner. On a personal account that is the only way to share a machine between repositories, short of moving them into an organization.
+- **One container, many repositories.** Add them in the web interface and each one gets its own runner. On a personal account that is the only way to share a machine between repositories, short of moving them into an organization.
+- **A web interface.** Port 8080 shows every repository as a line: waiting for jobs, running one, restarting or refused. The jobs of the last two hours sit on it as stops, and each repository has its live log and the jobs of the last two days. You add or remove repositories there, restart a runner, replace the token or change the labels, and the container keeps running.
 - **Clean up on stop.** Stopping the container removes every runner from GitHub, so the Actions settings of your repositories never fill up with offline leftovers. Starting it registers them again.
-- **One bad entry does not stop the rest.** A repository the token cannot reach is reported in the log and tried again every five minutes, while the others keep running.
-- **Clear messages.** A missing token, an empty list or a name without an owner stops the container with one line that says what is wrong.
+- **One bad entry does not stop the rest.** A repository the token cannot reach is reported in the log and the web interface, with the answer GitHub gave (401, 403 or 404), and tried again every five minutes, while the others keep running.
+- **Clear messages.** A missing token or an empty list keeps the container waiting with one line in the log that says what is missing. Fill it in on the web interface.
+- **A password if you want one.** Nothing is locked until you set a password in the settings. After that the page asks for it, and too many wrong tries are turned away for a while.
 - **Docker in your jobs.** Mount the Docker socket and the runners can build images and start containers, as in GitHub's own runners.
 - **Root or not.** The runners run as root by default, like the upstream image. With `RUN_AS_ROOT=false` they run as the unprivileged `runner` user.
 - **Healthy means listening.** The health check turns red as soon as one of the listed repositories has no runner waiting for jobs.
-- **Built on [myoung34/github-runner](https://github.com/myoung34/docker-github-actions-runner).** The runner, its tools and its updates come from there. This image adds the script that runs several of them.
+- **Built on [myoung34/github-runner](https://github.com/myoung34/docker-github-actions-runner).** The runner, its tools and its updates come from there. This image adds the service that runs several of them and the web interface.
 
 <br>
 
@@ -109,23 +117,25 @@ You need a personal access token that may manage runners in every repository you
 - **Fine-grained token:** repository access to those repositories, permission **Administration: Read and write**.
 - **Classic token:** the `repo` scope.
 
-On Unraid, install GitHub-Runner from [Community Applications](https://ca.unraid.net/apps?q=github-runner), paste the token and list the repositories. Anywhere else, one container is enough:
+On Unraid, install GitHub-Runner from [Community Applications](https://ca.unraid.net/apps?q=github-runner) and open its WebUI. Anywhere else, one container is enough:
 
 ```sh
 docker run -d --name github-runner \
-  -e ACCESS_TOKEN=github_pat_... \
-  -e RUNNER_REPOS="you/website you/backend you/dotfiles" \
+  -p 8080:8080 \
+  -v /srv/github-runner:/config \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --stop-timeout 60 \
   junkerderprovinz/github-runner:latest
 ```
 
-Then point a workflow at it with `runs-on: self-hosted`. Each runner shows up under **Settings → Actions → Runners** of its repository, named `GitHub-Runner`.
+Open `http://your-server:8080`, paste the token under **Settings** and add your repositories. Then point a workflow at them with `runs-on: self-hosted`. Each runner shows up under **Settings → Actions → Runners** of its repository, named `GitHub-Runner`.
+
+The settings live in `/config/config.json`, next to the job history. On the very first start the variables below fill that file, so an install from before the web interface keeps its token and repositories. After that the web interface is where you change them, and the variables are only read again in one case: a new `ACCESS_TOKEN` in the container settings replaces the saved token at the next start. A token you replaced in the web interface stays until that variable changes again. Changing any other variable later does nothing, and the log says so.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `ACCESS_TOKEN` | | Personal access token, see above. Required. |
-| `RUNNER_REPOS` | | Repositories as `owner/name`, separated by spaces or commas. Required. |
+| `ACCESS_TOKEN` | | Personal access token, see above. You can paste it in the web interface instead. |
+| `RUNNER_REPOS` | | Repositories for the first start, as `owner/name`, separated by spaces or commas. |
 | `REPO_OWNER` | | Owner for entries written without one, so `RUNNER_REPOS=website backend` works. |
 | `RUNNER_NAME` | `GitHub-Runner` | Name of the runner in every repository. |
 | `LABELS` | `self-hosted` | Extra labels, comma-separated. |
@@ -133,10 +143,13 @@ Then point a workflow at it with `runs-on: self-hosted`. Each runner shows up un
 | `RUN_AS_ROOT` | `true` | `false` runs the runners as the `runner` user. |
 | `DEREGISTER_ON_STOP` | `true` | `false` keeps the runners registered while the container is stopped. |
 | `RETRY_SECONDS` | `300` | How long to wait before trying a repository again that failed. |
+| `WEBUI_PORT` | `8080` | Port of the web interface inside the container. |
 
 Give the container a minute to stop (`--stop-timeout 60`, already set in the Unraid template). Removing the runners takes a moment per repository, and Docker's default of ten seconds can cut that short with many of them.
 
 A self-hosted runner runs whatever the workflow in that repository tells it to. Use it for your own repositories, not for public ones where strangers can open pull requests.
+
+The web interface has no password until you set one under **Settings → Security**, so anyone who can reach port 8080 can use it. Keep the port inside your home network, or set a password. Only a hash of it is stored, and the token never leaves the container: the page shows its last four characters and nothing more.
 
 ### Other Docker hosts
 
