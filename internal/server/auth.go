@@ -192,25 +192,6 @@ func clientOf(r *http.Request) string {
 	return peer
 }
 
-// homeHost reports whether the page was opened by an address of the own
-// network. Without a password only those are answered, so a website cannot
-// reach the API through DNS rebinding.
-func homeHost(host string) bool {
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
-	if net.ParseIP(host) != nil || host == "localhost" || !strings.Contains(host, ".") {
-		return true
-	}
-	for _, suffix := range []string{".local", ".lan", ".home.arpa", ".internal"} {
-		if strings.HasSuffix(host, suffix) {
-			return true
-		}
-	}
-	return false
-}
-
 func overTLS(r *http.Request) bool {
 	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 }

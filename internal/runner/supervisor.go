@@ -682,6 +682,15 @@ func (s *Supervisor) logf(r *runner, tone, format string, args ...any) {
 	s.appendLog(r, text, tone)
 }
 
+// Print writes lines to the container log as they are, kept together.
+func (s *Supervisor) Print(lines ...string) {
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
+	for _, line := range lines {
+		fmt.Fprintln(s.out, line)
+	}
+}
+
 func (s *Supervisor) print(line string) {
 	s.outMu.Lock()
 	defer s.outMu.Unlock()

@@ -244,6 +244,14 @@
 .world .signin-box { padding: 2rem; border-radius: 14px; background: var(--surface); box-shadow: 0 10px 40px -10px rgb(0 0 0 / .25); }
 .world .signin-box h1 { font-size: 24px; font-weight: 750; }
 .world .signin-box label { font-weight: 650; }
+.world .signin-forgot { align-self: center; padding: .25rem; border: 0; background: none; color: var(--sub); font: inherit; font-size: 14px; font-weight: 600; text-decoration: none; cursor: pointer; transition: color 160ms; }
+.world .signin-forgot:hover:not(:disabled), .world .signin-forgot:focus-visible { color: var(--focus); }
+.world .signin-label { display: flex; align-items: center; gap: .35rem; }
+.world .signin-info { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--sub); cursor: pointer; }
+.world .signin-info:hover, .world .signin-info[aria-expanded='true'] { color: var(--focus); }
+.world .signin-code { font-family: var(--mono); text-transform: uppercase; letter-spacing: .18em; }
+.world .signin-code::placeholder { letter-spacing: .18em; }
+.world .signin-list { margin: 0; padding-left: 1.2rem; }
 
 @media (max-width: 1100px) {
   .world .a-columns { grid-template-columns: 1fr; }

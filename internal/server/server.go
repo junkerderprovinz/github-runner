@@ -29,6 +29,7 @@ type Server struct {
 	ui       fs.FS
 	version  string
 	sessions *sessions
+	reset    resetCode
 	now      func() time.Time
 	sleep    func(time.Duration)
 }
@@ -43,6 +44,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/session", s.session)
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/logout", s.logout)
+	mux.HandleFunc("POST /api/reset-code", s.requestReset)
+	mux.HandleFunc("POST /api/reset", s.resetPassword)
 
 	private := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.signedIn(h)) }
 	private("GET /api/state", s.state)
@@ -77,18 +80,13 @@ func (s *Server) locked() bool {
 
 func (s *Server) signedIn(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case s.locked() && !s.sessions.valid(r):
+		if s.locked() && !s.sessions.valid(r) {
 			fail(w, http.StatusUnauthorized, "Sign in first.")
-		case !s.locked() && !homeHost(r.Host):
-			fail(w, http.StatusForbidden, homeOnly)
-		default:
-			h.ServeHTTP(w, r)
+			return
 		}
+		h.ServeHTTP(w, r)
 	})
 }
-
-const homeOnly = "Without a password, GitHub-Runner only answers on addresses of your own network. Open it by its IP address and set a password first."
 
 func reply(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -124,7 +122,6 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, map[string]bool{
 		"locked":   locked,
 		"signedIn": !locked || s.sessions.valid(r),
-		"homeOnly": !locked && !homeHost(r.Host),
 	})
 }
 

@@ -149,7 +149,9 @@ Give the container a minute to stop (`--stop-timeout 60`, already set in the Unr
 
 A self-hosted runner runs whatever the workflow in that repository tells it to. Use it for your own repositories, not for public ones where strangers can open pull requests.
 
-The web interface has no password until you set one under **Settings → Security**, so anyone who can reach port 8080 can use it. Keep the port inside your home network, or set a password. Without one it only answers when you open it by an IP address or a name of your own network (one without a dot, or ending in `.local`, `.lan`, `.home.arpa` or `.internal`), so no website can reach it through DNS rebinding. Behind a reverse proxy with a public domain, set the password first from the IP address. Only a hash of it is stored, and the token never leaves the container: the page shows its last four characters and nothing more.
+The web interface has no password until you set one under **Settings → Security**, so anyone who can reach port 8080 can use it, under any address. Keep the port inside your home network, or set a password before you put it behind a reverse proxy with a public domain. Only a hash of the password is stored, and the token never leaves the container: the page shows its last four characters and nothing more.
+
+Forgot the password? Click **Forgot password?** on the sign-in page. GitHub-Runner writes a code to its container log (on Unraid: Docker tab, the GitHub-Runner icon, **Logs**) that is valid for 10 minutes. Type it in with a new password, and every other session ends. Anyone who can read the container log can reset the password this way: root on the server, a log viewer such as Dozzle, any container with the Docker socket (read-only is enough) and any tool that forwards container logs.
 
 ### Other Docker hosts
 

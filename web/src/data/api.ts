@@ -59,7 +59,7 @@ async function call<T = void>(method: string, path: string, body?: unknown): Pro
   }).catch(() => {
     throw new ApiError('GitHub-Runner cannot be reached. Is the container running?')
   })
-  if (res.status === 401 && path !== 'login') {
+  if (res.status === 401 && path !== 'login' && path !== 'reset') {
     lock()
     throw new ApiError('Sign in first.')
   }
@@ -125,8 +125,7 @@ function listen() {
 
 export async function start() {
   try {
-    const session = await call<{ locked: boolean; signedIn: boolean; homeOnly: boolean }>('GET', 'session')
-    if (session.homeOnly) return set({ phase: 'homeOnly' })
+    const session = await call<{ locked: boolean; signedIn: boolean }>('GET', 'session')
     if (!session.signedIn) return lock()
     await load()
     listen()
@@ -139,6 +138,14 @@ export async function start() {
 export async function signIn(password: string) {
   await call('POST', 'login', { password })
   await start()
+}
+
+export async function requestReset() {
+  await call('POST', 'reset-code')
+}
+
+export async function resetPassword(code: string, password: string) {
+  await call('POST', 'reset', { code, password })
 }
 
 export async function signOut() {

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +45,25 @@ type site struct {
 	sup  *runner.Supervisor
 	gh   *fakeGitHub
 	path string
+	log  *containerLog
+}
+
+// containerLog is what the container prints, read while the service writes.
+type containerLog struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (l *containerLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *containerLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
 }
 
 func newSite(t *testing.T, env map[string]string, opts ...func(*Server)) *site {
@@ -55,10 +75,11 @@ func newSite(t *testing.T, env map[string]string, opts ...func(*Server)) *site {
 		t.Fatal(err)
 	}
 	gh := &fakeGitHub{refuse: map[string]error{}}
+	out := &containerLog{}
 	sup, err := runner.New(cfg, gh, runner.Paths{
 		Home: filepath.Join(dir, "missing"), Runners: filepath.Join(dir, "runners"),
 		Work: filepath.Join(dir, "work"), History: filepath.Join(dir, "history.json"),
-	}, io.Discard)
+	}, out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +94,7 @@ func newSite(t *testing.T, env map[string]string, opts ...func(*Server)) *site {
 		srv.Close()
 		sup.Stop(false)
 	})
-	return &site{url: srv.URL, cfg: cfg, sup: sup, gh: gh, path: path}
+	return &site{url: srv.URL, cfg: cfg, sup: sup, gh: gh, path: path, log: out}
 }
 
 func client(t *testing.T) *http.Client {
@@ -117,7 +138,7 @@ func TestThePageIsOpenWithoutAPassword(t *testing.T) {
 	if code, body := call(t, c, "GET", s.url+"/api/state", ""); code != 200 || !strings.Contains(body, `"repos":[]`) {
 		t.Fatalf("%d %s", code, body)
 	}
-	if code, body := call(t, c, "GET", s.url+"/api/session", ""); code != 200 || body != "{\"homeOnly\":false,\"locked\":false,\"signedIn\":true}\n" {
+	if code, body := call(t, c, "GET", s.url+"/api/session", ""); code != 200 || body != "{\"locked\":false,\"signedIn\":true}\n" {
 		t.Fatalf("%d %s", code, body)
 	}
 	if code, body := call(t, c, "GET", s.url+"/", ""); code != 200 || !strings.Contains(body, "GitHub-Runner") {
@@ -165,7 +186,7 @@ func TestAPasswordLocksThePage(t *testing.T) {
 	if code, _ := call(t, stranger, "POST", s.url+"/api/repos", `{"repo":"you/x"}`); code != 401 {
 		t.Errorf("a locked page took a change: %d", code)
 	}
-	if _, body := call(t, stranger, "GET", s.url+"/api/session", ""); body != "{\"homeOnly\":false,\"locked\":true,\"signedIn\":false}\n" {
+	if _, body := call(t, stranger, "GET", s.url+"/api/session", ""); body != "{\"locked\":true,\"signedIn\":false}\n" {
 		t.Errorf("session: %s", body)
 	}
 	if code, body := call(t, stranger, "POST", s.url+"/api/login", `{"password":"wrong"}`); code != 401 || errorOf(t, body) != "That is not the password set for this page." {
@@ -267,21 +288,160 @@ func TestFailuresCountPerClientBehindAProxy(t *testing.T) {
 	}
 }
 
-func TestWithoutAPasswordOnlyLocalAddressesGetIn(t *testing.T) {
+func TestWithoutAPasswordEveryAddressGetsIn(t *testing.T) {
 	s := newSite(t, map[string]string{"ACCESS_TOKEN": "x"})
-	for _, host := range []string{"192.168.1.10:8080", "[::1]:8080", "localhost:8080", "tower:8080", "tower.local:8080", "nas.lan", "box.home.arpa", "runner.internal"} {
+	for _, host := range []string{"192.168.1.10:8080", "tower.local:8080", "runner.example.com:443"} {
 		if code := callHost(t, s.url+"/api/state", host); code != 200 {
 			t.Errorf("%s got %d", host, code)
 		}
 	}
-	for _, host := range []string{"rebind.example.com", "runner.example.com:443"} {
-		if code := callHost(t, s.url+"/api/state", host); code != 403 {
-			t.Errorf("%s got %d", host, code)
+}
+
+var codeInLog = regexp.MustCompile(`code: ([2-9A-HJ-NP-Z]{4})-([2-9A-HJ-NP-Z]{4})-([2-9A-HJ-NP-Z]{4})`)
+
+// codesIn returns every reset code the log shows, oldest first.
+func codesIn(log string) []string {
+	var codes []string
+	for _, m := range codeInLog.FindAllStringSubmatch(log, -1) {
+		codes = append(codes, m[1]+"-"+m[2]+"-"+m[3])
+	}
+	return codes
+}
+
+func lockedSite(t *testing.T, opts ...func(*Server)) (*site, *http.Client) {
+	t.Helper()
+	s := newSite(t, nil, opts...)
+	owner := client(t)
+	if code, _ := call(t, owner, "PUT", s.url+"/api/password", `{"password":"forgotten"}`); code != 204 {
+		t.Fatal("the password was not set")
+	}
+	return s, owner
+}
+
+func TestAForgottenPasswordIsResetWithTheCodeFromTheLog(t *testing.T) {
+	s, owner := lockedSite(t)
+	c := client(t)
+	if code, body := call(t, c, "POST", s.url+"/api/reset-code", ""); code != 204 {
+		t.Fatalf("%d %s", code, body)
+	}
+	codes := codesIn(s.log.String())
+	if len(codes) != 1 {
+		t.Fatalf("the log shows %d codes:\n%s", len(codes), s.log.String())
+	}
+	if !strings.Contains(s.log.String(), "If nobody here asked for a reset, ignore this. The password is unchanged.") {
+		t.Errorf("the log does not say what to do without a request:\n%s", s.log.String())
+	}
+	typed := strings.ToLower(strings.ReplaceAll(codes[0], "-", " "))
+	if code, body := call(t, c, "POST", s.url+"/api/reset", `{"code":"`+typed+`","password":"remembered"}`); code != 204 {
+		t.Fatalf("%d %s", code, body)
+	}
+	if code, _ := call(t, c, "GET", s.url+"/api/state", ""); code != 200 {
+		t.Errorf("the reset did not sign in: %d", code)
+	}
+	if code, _ := call(t, owner, "GET", s.url+"/api/state", ""); code != 401 {
+		t.Errorf("another session outlived the reset: %d", code)
+	}
+	if code, _ := call(t, client(t), "POST", s.url+"/api/login", `{"password":"forgotten"}`); code != 401 {
+		t.Errorf("the old password still works: %d", code)
+	}
+	if code, _ := call(t, client(t), "POST", s.url+"/api/login", `{"password":"remembered"}`); code != 204 {
+		t.Errorf("the new password does not work: %d", code)
+	}
+	if code, _ := call(t, client(t), "POST", s.url+"/api/reset", `{"code":"`+codes[0]+`","password":"again"}`); code != 401 {
+		t.Errorf("a used code worked twice: %d", code)
+	}
+}
+
+func TestTheCodeAppearsOnlyInTheLog(t *testing.T) {
+	s, _ := lockedSite(t)
+	c := client(t)
+	_, body := call(t, c, "POST", s.url+"/api/reset-code", "")
+	code := codesIn(s.log.String())[0]
+	_, refused := call(t, c, "POST", s.url+"/api/reset", `{"code":"2222-2222-2222","password":"x"}`)
+	_, state := call(t, c, "GET", s.url+"/api/session", "")
+	for _, answer := range []string{body, refused, state} {
+		if strings.Contains(answer, code) || strings.Contains(answer, strings.ReplaceAll(code, "-", "")) {
+			t.Errorf("an answer shows the code: %s", answer)
 		}
 	}
-	call(t, client(t), "PUT", s.url+"/api/password", `{"password":"right"}`)
-	if code := callHost(t, s.url+"/api/session", "runner.example.com"); code != 200 {
-		t.Errorf("with a password the page under a domain got %d", code)
+}
+
+func TestAskingAgainKeepsTheCode(t *testing.T) {
+	s, _ := lockedSite(t)
+	for range 3 {
+		call(t, client(t), "POST", s.url+"/api/reset-code", "")
+	}
+	if codes := codesIn(s.log.String()); len(codes) != 1 {
+		t.Fatalf("asking three times wrote %d codes", len(codes))
+	}
+}
+
+func TestAnExpiredCodeIsRefusedLikeAWrongOne(t *testing.T) {
+	var mu sync.Mutex
+	now := time.Now()
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	s, _ := lockedSite(t, func(srv *Server) { srv.now = clock })
+	c := client(t)
+	call(t, c, "POST", s.url+"/api/reset-code", "")
+	old := codesIn(s.log.String())[0]
+	_, wrong := call(t, c, "POST", s.url+"/api/reset", `{"code":"2222-2222-2222","password":"x"}`)
+	mu.Lock()
+	now = now.Add(resetLife + time.Second)
+	mu.Unlock()
+	code, expired := call(t, c, "POST", s.url+"/api/reset", `{"code":"`+old+`","password":"x"}`)
+	if code != 401 || expired != wrong {
+		t.Fatalf("expired: %d %s, wrong: %s", code, expired, wrong)
+	}
+	if errorOf(t, expired) != "That code is wrong or has expired. If it expired, the log now shows a new one." {
+		t.Errorf("refusal: %s", expired)
+	}
+	call(t, c, "POST", s.url+"/api/reset-code", "")
+	if codes := codesIn(s.log.String()); len(codes) != 2 || codes[1] == old {
+		t.Fatalf("no new code after the old one expired: %v", codes)
+	}
+}
+
+func TestWrongCodesAreSlowedButTheRightOneGetsThrough(t *testing.T) {
+	var waits []time.Duration
+	s, _ := lockedSite(t, func(srv *Server) { srv.sleep = func(d time.Duration) { waits = append(waits, d) } })
+	c := client(t)
+	call(t, c, "POST", s.url+"/api/reset-code", "")
+	for range 20 {
+		call(t, c, "POST", s.url+"/api/reset", `{"code":"2222-2222-2222","password":"x"}`)
+	}
+	if len(waits) == 0 || waits[len(waits)-1] != maxDelay {
+		t.Fatalf("waits = %v", waits)
+	}
+	waits = nil
+	if code, body := call(t, c, "POST", s.url+"/api/login", `{"password":"wrong"}`); code != 401 || len(waits) != 0 {
+		t.Errorf("wrong codes slowed down signing in: %d %s %v", code, body, waits)
+	}
+	code := codesIn(s.log.String())[0]
+	if status, body := call(t, c, "POST", s.url+"/api/reset", `{"code":"`+code+`","password":"new"}`); status != 204 {
+		t.Fatalf("the right code after wrong ones: %d %s", status, body)
+	}
+}
+
+func TestAResetNeedsANewPassword(t *testing.T) {
+	s, _ := lockedSite(t)
+	c := client(t)
+	call(t, c, "POST", s.url+"/api/reset-code", "")
+	code := codesIn(s.log.String())[0]
+	if status, body := call(t, c, "POST", s.url+"/api/reset", `{"code":"`+code+`","password":""}`); status != 400 {
+		t.Fatalf("%d %s", status, body)
+	}
+	if status, _ := call(t, c, "POST", s.url+"/api/reset", `{"code":"`+code+`","password":"new"}`); status != 204 {
+		t.Errorf("an empty password spent the code: %d", status)
+	}
+}
+
+func TestWithoutAPasswordThereIsNothingToReset(t *testing.T) {
+	s := newSite(t, nil)
+	if code, _ := call(t, client(t), "POST", s.url+"/api/reset-code", ""); code != 409 {
+		t.Errorf("reset-code got %d", code)
+	}
+	if codes := codesIn(s.log.String()); len(codes) != 0 {
+		t.Errorf("an open page wrote a code: %v", codes)
 	}
 }
 
