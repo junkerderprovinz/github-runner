@@ -39,7 +39,9 @@ func main() {
 	banner := flag.String("banner", "/usr/local/bin/print-banner.sh", "script that prints the init banner")
 	flag.Parse()
 
-	exec.Command(*banner, "GitHub-Runner", "one runner per repository").Run()
+	art := exec.Command(*banner, "GitHub-Runner", "one runner per repository")
+	art.Stdout, art.Stderr = os.Stdout, os.Stderr
+	art.Run()
 	if err := run(*configDir, *api, runner.Paths{
 		Home: *home, Runners: *runners, Work: *work,
 		History: filepath.Join(*configDir, "history.json"),
