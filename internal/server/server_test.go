@@ -121,6 +121,13 @@ func TestThePageIsOpenWithoutAPassword(t *testing.T) {
 	}
 }
 
+func TestAFreshInstallSendsAnEmptyJobList(t *testing.T) {
+	s := newSite(t, nil)
+	if code, body := call(t, client(t), "GET", s.url+"/api/state", ""); code != 200 || !strings.Contains(body, `"jobs":[]`) {
+		t.Fatalf("%d %s", code, body)
+	}
+}
+
 func TestTheTokenNeverLeavesTheServer(t *testing.T) {
 	s := newSite(t, map[string]string{"ACCESS_TOKEN": "github_pat_SECRETSECRET1234"})
 	c := client(t)

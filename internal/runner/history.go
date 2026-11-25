@@ -73,7 +73,7 @@ func openHistory(path string, now func() time.Time) (*history, error) {
 func (h *history) all() []Job {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return slices.Clone(h.jobs)
+	return append([]Job{}, h.jobs...)
 }
 
 // start records a job that has just begun and estimates its length from the
