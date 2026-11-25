@@ -136,6 +136,8 @@ A self-hosted runner runs whatever the workflow in that repository tells it to. 
 [compose.yaml](compose.yaml) runs GitHub-Runner on any Linux server with Docker. Put it in a folder of its own, fill in the token and the repositories, and start it with `docker compose up -d`.
 
 - **Synology:** in Container Manager, create a project from the file (DSM 7.2 or newer).
+- **Ugreen:** in the Docker app of UGOS Pro, create a project from the file.
+- **QNAP:** in Container Station, create an application from the file.
 - **Proxmox:** run it in a VM or an LXC container that has Docker.
 - **MOS:** install GitHub-Runner from the [MOS Hub](https://mos-official.net/apps.html?search=GitHub-Runner).
 
