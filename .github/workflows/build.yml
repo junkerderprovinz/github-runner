@@ -36,8 +36,44 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # The image is only built from code whose tests pass.
+  test:
+    name: Go and web interface tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          [ -z "${unformatted}" ] || { echo "::error::gofmt wants to change: ${unformatted}"; exit 1; }
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race -count=1 ./...
+
+      - name: Type-check and build the web interface
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
   build-and-push:
     name: Build & Push
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -50,6 +86,10 @@ jobs:
           if ! [[ "${TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::Could not read the runner version from the Dockerfile"; exit 1; fi
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "Runner version: ${TAG}"
+          # GitHub-Runner's own version is the newest release notes file.
+          APP=$(find .github/release-notes -name 'v*.md' -printf '%f\n' | sed 's/^v//; s/\.md$//' | sort -V | tail -1)
+          echo "app=${APP}" >> "${GITHUB_OUTPUT}"
+          echo "GitHub-Runner version: ${APP}"
 
       - name: Check if image already exists
         id: check
@@ -113,51 +153,66 @@ jobs:
           push: false
           load: true
           tags: github-runner:smoke-amd64
+          build-args: VERSION=${{ steps.ver.outputs.app }}
           cache-from: type=gha
           no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
-      # A wrong setting must stop the container with one clear line, not leave it
-      # restarting forever without saying why.
-      - name: "Smoke test: clear errors for missing settings"
+      # Missing settings keep the container up with one clear line, so they can
+      # be filled in through the web interface, which answers on port 8080.
+      - name: "Smoke test: clear messages and the web interface"
         if: steps.check.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          expect_exit() {
+          expect_line() {
             local want=$1; shift
             docker rm -f gr-smoke >/dev/null 2>&1 || true
-            docker run -d --name gr-smoke "$@" github-runner:smoke-amd64 >/dev/null
-            for _ in $(seq 1 20); do
-              [ "$(docker inspect -f '{{.State.Status}}' gr-smoke)" = "exited" ] && break
+            docker run -d --name gr-smoke -p 127.0.0.1:18080:8080 "$@" github-runner:smoke-amd64 >/dev/null
+            for _ in $(seq 1 30); do
+              grep -q "$want" <<< "$(docker logs gr-smoke 2>&1)" && break
               sleep 1
             done
-            [ "$(docker inspect -f '{{.State.Status}}' gr-smoke)" = "exited" ] \
-              || { echo "::error::Expected the container to stop: $want"; docker logs gr-smoke; exit 1; }
             grep -q "$want" <<< "$(docker logs gr-smoke 2>&1)" \
-              || { echo "::error::The container stopped without saying: $want"; docker logs gr-smoke; exit 1; }
+              || { echo "::error::The container never said: $want"; docker logs gr-smoke; exit 1; }
+            [ "$(docker inspect -f '{{.State.Status}}' gr-smoke)" = "running" ] \
+              || { echo "::error::The container stopped: $want"; docker logs gr-smoke; exit 1; }
             echo "OK: $want"
           }
-          expect_exit "ACCESS_TOKEN is empty"
-          expect_exit "RUNNER_REPOS is empty" -e ACCESS_TOKEN=x
-          expect_exit "has no owner" -e ACCESS_TOKEN=x -e RUNNER_REPOS=lonely
+          expect_line "There is no access token yet"
+          expect_line "RUNNER_REPOS is empty" -e ACCESS_TOKEN=x
+          expect_line "has no owner" -e ACCESS_TOKEN=github_pat_smoke -e RUNNER_REPOS=lonely
           grep -q "one runner per repository" <<< "$(docker logs gr-smoke 2>&1)" \
             || { echo "::error::The init-log banner is missing"; exit 1; }
+
+          for _ in $(seq 1 20); do curl -fsS -o /dev/null http://127.0.0.1:18080/ && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18080/ | grep -q "<title>GitHub-Runner</title>" \
+            || { echo "::error::The web interface does not answer on 8080"; exit 1; }
+          state=$(curl -fsS http://127.0.0.1:18080/api/state)
+          jq -e '.repos == [] and .settings.token.set == true' <<< "${state}" >/dev/null \
+            || { echo "::error::/api/state does not match the settings"; echo "${state}"; exit 1; }
+          if grep -q "github_pat_smoke" <<< "${state}"; then
+            echo "::error::/api/state shows the token"; exit 1
+          fi
+          echo "OK: the web interface and /api/state answer"
 
           # A token GitHub rejects keeps the container up and retrying, so a
           # fixed token needs no restart.
           docker rm -f gr-smoke >/dev/null
-          docker run -d --name gr-smoke -e ACCESS_TOKEN=invalid -e RUNNER_REPOS=octocat/Hello-World \
+          docker run -d --name gr-smoke -p 127.0.0.1:18080:8080 -e ACCESS_TOKEN=invalid -e RUNNER_REPOS=octocat/Hello-World \
             -e RETRY_SECONDS=5 github-runner:smoke-amd64 >/dev/null
           sleep 15
           [ "$(docker inspect -f '{{.State.Status}}' gr-smoke)" = "running" ] \
             || { echo "::error::A rejected token stopped the container"; docker logs gr-smoke; exit 1; }
           grep -q "was rejected (401)" <<< "$(docker logs gr-smoke 2>&1)" \
             || { echo "::error::A rejected token was not reported"; docker logs gr-smoke; exit 1; }
+          curl -fsS http://127.0.0.1:18080/api/state | jq -e '.repos[0].status == "error" and (.repos[0].error | contains("401"))' >/dev/null \
+            || { echo "::error::The web interface does not show the rejected token"; exit 1; }
           docker rm -f gr-smoke >/dev/null
           echo "Setting checks passed."
 
       # Registers a runner in each test repository, waits until GitHub shows
-      # them online, and checks that a stop removes them. The runners carry only
-      # the run's own label, so no real job can land on them. Needs the token
+      # them online, removes one and adds it again through the web interface's
+      # API, and checks that a stop removes them all. The runners carry only the
+      # run's own label, so no real job can land on them. Needs the token
       # secret, which pull requests never get.
       - name: "Smoke test: register, run and deregister"
         if: steps.check.outputs.skip != 'true' && github.event_name != 'pull_request'
@@ -173,24 +228,39 @@ jobs:
           NAME="smoke-${GITHUB_RUN_ID}"
           cleanup() { docker logs gr-live 2>&1 | tail -40 || true; docker rm -f gr-live >/dev/null 2>&1 || true; }
           trap cleanup EXIT
-          docker run -d --name gr-live -e ACCESS_TOKEN="${TOKEN}" -e RUNNER_REPOS="${REPOS}" \
+          docker run -d --name gr-live -p 127.0.0.1:18080:8080 -e ACCESS_TOKEN="${TOKEN}" -e RUNNER_REPOS="${REPOS}" \
             -e RUNNER_NAME="${NAME}" -e LABELS="${NAME}" -e NO_DEFAULT_LABELS=true github-runner:smoke-amd64 >/dev/null
 
           status_in() {
             curl -fsS -H "Authorization: Bearer ${TOKEN}" "https://api.github.com/repos/$1/actions/runners" \
               | jq -r --arg n "${NAME}" '.runners[] | select(.name == $n) | .status'
           }
-          for repo in ${REPOS//,/ }; do
-            ok=""
+          wait_for() {
+            local repo=$1 want=$2
             for _ in $(seq 1 60); do
-              [ "$(status_in "$repo")" = "online" ] && { ok=1; break; }
+              [ "$(status_in "$repo")" = "$want" ] && return 0
               sleep 3
             done
-            [ -n "$ok" ] || { echo "::error::No online runner ${NAME} in ${repo}"; exit 1; }
+            return 1
+          }
+          for repo in ${REPOS//,/ }; do
+            wait_for "$repo" online || { echo "::error::No online runner ${NAME} in ${repo}"; exit 1; }
             echo "Online in ${repo}"
           done
           [ "$(docker inspect -f '{{.State.Health.Status}}' gr-live)" != "unhealthy" ] \
             || { echo "::error::The health check reports unhealthy with every runner online"; exit 1; }
+
+          first=${REPOS//,/ }
+          first=${first%% *}
+          curl -fsS -X DELETE "http://127.0.0.1:18080/api/repos/${first}" \
+            || { echo "::error::Removing ${first} through the API failed"; exit 1; }
+          wait_for "$first" "" || { echo "::error::Removing ${first} left the runner registered"; exit 1; }
+          echo "Removed from ${first} through the API"
+          curl -fsS -X POST -H 'Content-Type: application/json' -d "{\"repo\":\"${first}\"}" \
+            http://127.0.0.1:18080/api/repos >/dev/null \
+            || { echo "::error::Adding ${first} through the API failed"; exit 1; }
+          wait_for "$first" online || { echo "::error::Adding ${first} through the API registered no runner"; exit 1; }
+          echo "Added to ${first} through the API"
 
           docker stop -t 60 gr-live >/dev/null
           for repo in ${REPOS//,/ }; do
@@ -211,6 +281,7 @@ jobs:
           push: false
           load: true
           tags: github-runner:smoke-arm64
+          build-args: VERSION=${{ steps.ver.outputs.app }}
           cache-from: type=gha
           no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
@@ -220,9 +291,15 @@ jobs:
           set -euo pipefail
           docker run --rm --platform linux/arm64 --entrypoint /actions-runner/bin/Runner.Listener \
             github-runner:smoke-arm64 --version
-          out=$(docker run --rm --platform linux/arm64 github-runner:smoke-arm64 2>&1 || true)
-          grep -q "ACCESS_TOKEN is empty" <<< "${out}" \
-            || { echo "::error::The arm64 image did not start its script"; echo "${out}"; exit 1; }
+          docker run -d --name gr-arm --platform linux/arm64 github-runner:smoke-arm64 >/dev/null
+          for _ in $(seq 1 60); do
+            grep -q "Web interface on port 8080" <<< "$(docker logs gr-arm 2>&1)" && break
+            sleep 1
+          done
+          out=$(docker logs gr-arm 2>&1)
+          docker rm -f gr-arm >/dev/null
+          grep -q "Web interface on port 8080" <<< "${out}" \
+            || { echo "::error::The arm64 image did not start its service"; echo "${out}"; exit 1; }
           echo "arm64 starts."
 
       - name: Stamp the build time
@@ -237,6 +314,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          build-args: VERSION=${{ steps.ver.outputs.app }}
           # The commit and build time are only known here, and the revision
           # label traces a published image back to its source.
           labels: |
