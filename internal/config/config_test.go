@@ -156,21 +156,58 @@ func TestAnEmptyTokenInTheEnvironmentKeepsTheSavedOne(t *testing.T) {
 
 func TestOtherChangedVariablesAreNamedNotApplied(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if _, _, err := Load(path, envOf(map[string]string{"ACCESS_TOKEN": "x", "RUNNER_REPOS": "you/one"}), start); err != nil {
+	env := map[string]string{"ACCESS_TOKEN": "x", "RUNNER_REPOS": "you/one", "RUNNER_NAME": "first"}
+	if _, _, err := Load(path, envOf(env), start); err != nil {
 		t.Fatal(err)
 	}
-	s, notes, err := Load(path, envOf(map[string]string{"ACCESS_TOKEN": "x", "RUNNER_REPOS": "you/two"}), start)
+	env["RUNNER_NAME"] = "second"
+	s, notes, err := Load(path, envOf(env), start)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.Get().RepoNames(); !slices.Equal(got, []string{"you/one"}) {
-		t.Errorf("repos = %v", got)
+	if got := s.Get().Name; got != "first" {
+		t.Errorf("name = %q", got)
 	}
-	if len(notes) != 1 || !strings.Contains(notes[0], "RUNNER_REPOS changed") {
+	if len(notes) != 1 || !strings.Contains(notes[0], "RUNNER_NAME changed") {
 		t.Errorf("notes = %q", notes)
 	}
-	if _, notes, _ := Load(path, envOf(map[string]string{"ACCESS_TOKEN": "x", "RUNNER_REPOS": "you/two"}), start); len(notes) != 0 {
+	if _, notes, _ := Load(path, envOf(env), start); len(notes) != 0 {
 		t.Errorf("the same change was named again: %q", notes)
+	}
+}
+
+func TestRepositoriesNewInTheEnvironmentAreAdded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	env := map[string]string{"ACCESS_TOKEN": "x", "RUNNER_REPOS": "you/one"}
+	if _, _, err := Load(path, envOf(env), start); err != nil {
+		t.Fatal(err)
+	}
+	env["RUNNER_REPOS"] = "you/one, you/two"
+	s, notes, err := Load(path, envOf(env), start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Get().RepoNames(); !slices.Equal(got, []string{"you/one", "you/two"}) {
+		t.Errorf("repos = %v", got)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "you/two") {
+		t.Errorf("notes = %q", notes)
+	}
+}
+
+func TestRepositoriesGoneFromTheEnvironmentStay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	env := map[string]string{"ACCESS_TOKEN": "x", "RUNNER_REPOS": "you/one"}
+	if _, _, err := Load(path, envOf(env), start); err != nil {
+		t.Fatal(err)
+	}
+	env["RUNNER_REPOS"] = "you/two"
+	s, _, err := Load(path, envOf(env), start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Get().RepoNames(); !slices.Equal(got, []string{"you/one", "you/two"}) {
+		t.Errorf("repos = %v", got)
 	}
 }
 

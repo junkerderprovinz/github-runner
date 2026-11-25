@@ -130,12 +130,12 @@ docker run -d --name github-runner \
 
 Open `http://your-server:8080`, paste the token under **Settings** and add your repositories. Then point a workflow at them with `runs-on: self-hosted`. Each runner shows up under **Settings → Actions → Runners** of its repository, named `GitHub-Runner`.
 
-The settings live in `/config/config.json`, next to the job history. On the very first start the variables below fill that file, so an install from before the web interface keeps its token and repositories. After that the web interface is where you change them, and the variables are only read again in one case: a new `ACCESS_TOKEN` in the container settings replaces the saved token at the next start. A token you replaced in the web interface stays until that variable changes again. Changing any other variable later does nothing, and the log says so.
+The settings live in `/config/config.json`, next to the job history. On the very first start the variables below fill that file, so an install from before the web interface keeps its token and repositories. After that the web interface is where you change them, and the variables are only read again in two cases. A new `ACCESS_TOKEN` in the container settings replaces the saved token at the next start, and a token you replaced in the web interface stays until that variable changes again. Repositories that are new in `RUNNER_REPOS` are added at the next start, while one you take out of the list keeps its runner until you remove it in the web interface. Changing any other variable later does nothing, and the log says so.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `ACCESS_TOKEN` | | Personal access token, see above. You can paste it in the web interface instead. |
-| `RUNNER_REPOS` | | Repositories for the first start, as `owner/name`, separated by spaces or commas. |
+| `RUNNER_REPOS` | | Repositories as `owner/name`, separated by spaces or commas. New entries are added at the next start. |
 | `REPO_OWNER` | | Owner for entries written without one, so `RUNNER_REPOS=website backend` works. |
 | `RUNNER_NAME` | `GitHub-Runner` | Name of the runner in every repository. |
 | `LABELS` | `self-hosted` | Extra labels, comma-separated. |

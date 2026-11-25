@@ -194,7 +194,21 @@ func Load(path string, env func(string) string, now time.Time) (*Store, []string
 		case name == "ACCESS_TOKEN" && v != "" && v != c.Token:
 			c.Token = v
 			notes = append(notes, "ACCESS_TOKEN changed in the container settings and replaces the saved token.")
-		case name != "ACCESS_TOKEN" && v != "":
+		case name == "ACCESS_TOKEN":
+		// A repository taken out of the list keeps its runner, because removing
+		// one is done in the web interface.
+		case name == "RUNNER_REPOS":
+			repos, bad := ParseRepos(v, c.Owner)
+			for _, err := range bad {
+				notes = append(notes, err.Error())
+			}
+			for _, repo := range repos {
+				if _, ok := c.Repo(repo); !ok {
+					c.Repos = append(c.Repos, Repo{Name: repo, Line: c.FreeLine(), Added: now})
+					notes = append(notes, repo+" is new in RUNNER_REPOS and was added.")
+				}
+			}
+		case v != "":
 			notes = append(notes, name+" changed in the container settings. It only seeds the first start, so change it in the web interface instead.")
 		}
 	}
