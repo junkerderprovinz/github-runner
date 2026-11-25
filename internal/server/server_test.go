@@ -85,7 +85,7 @@ func newSite(t *testing.T, env map[string]string, opts ...func(*Server)) *site {
 	}
 	sup.Start()
 	ui := fstest.MapFS{"index.html": {Data: []byte("<title>GitHub-Runner</title>")}}
-	app := New(cfg, sup, gh, ui, "1.1.0")
+	app := New(cfg, sup, gh, ui, "1.0.1")
 	for _, opt := range opts {
 		opt(app)
 	}
