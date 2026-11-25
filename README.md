@@ -137,6 +137,7 @@ A self-hosted runner runs whatever the workflow in that repository tells it to. 
 
 - **Synology:** in Container Manager, create a project from the file (DSM 7.2 or newer).
 - **Proxmox:** run it in a VM or an LXC container that has Docker.
+- **MOS:** install GitHub-Runner from the [MOS Hub](https://mos-official.net/apps.html?search=GitHub-Runner).
 
 <br>
 
