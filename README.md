@@ -102,7 +102,7 @@ The repository names in these pictures are made up.
 - **Clean up on stop.** Stopping the container removes every runner from GitHub, so the Actions settings of your repositories never fill up with offline leftovers. Starting it registers them again.
 - **One bad entry does not stop the rest.** A repository the token cannot reach is reported in the log and the web interface, with the answer GitHub gave (401, 403 or 404), and tried again every five minutes, while the others keep running.
 - **Clear messages.** A missing token or an empty list keeps the container waiting with one line in the log that says what is missing. Fill it in on the web interface.
-- **A password if you want one.** Nothing is locked until you set a password in the settings. After that the page asks for it, and too many wrong tries are turned away for a while.
+- **A password if you want one.** Nothing is locked until you set a password in the settings. After that the page asks for it, and each wrong try in a row is answered a little later, up to ten seconds, while the right password always gets through.
 - **Docker in your jobs.** Mount the Docker socket and the runners can build images and start containers, as in GitHub's own runners.
 - **Root or not.** The runners run as root by default, like the upstream image. With `RUN_AS_ROOT=false` they run as the unprivileged `runner` user.
 - **Healthy means listening.** The health check turns red as soon as one of the listed repositories has no runner waiting for jobs.
@@ -149,7 +149,7 @@ Give the container a minute to stop (`--stop-timeout 60`, already set in the Unr
 
 A self-hosted runner runs whatever the workflow in that repository tells it to. Use it for your own repositories, not for public ones where strangers can open pull requests.
 
-The web interface has no password until you set one under **Settings → Security**, so anyone who can reach port 8080 can use it. Keep the port inside your home network, or set a password. Only a hash of it is stored, and the token never leaves the container: the page shows its last four characters and nothing more.
+The web interface has no password until you set one under **Settings → Security**, so anyone who can reach port 8080 can use it. Keep the port inside your home network, or set a password. Without one it only answers when you open it by an IP address or a name of your own network (one without a dot, or ending in `.local`, `.lan`, `.home.arpa` or `.internal`), so no website can reach it through DNS rebinding. Behind a reverse proxy with a public domain, set the password first from the IP address. Only a hash of it is stored, and the token never leaves the container: the page shows its last four characters and nothing more.
 
 ### Other Docker hosts
 

@@ -46,7 +46,7 @@ type site struct {
 	path string
 }
 
-func newSite(t *testing.T, env map[string]string) *site {
+func newSite(t *testing.T, env map[string]string, opts ...func(*Server)) *site {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -64,7 +64,11 @@ func newSite(t *testing.T, env map[string]string) *site {
 	}
 	sup.Start()
 	ui := fstest.MapFS{"index.html": {Data: []byte("<title>GitHub-Runner</title>")}}
-	srv := httptest.NewServer(New(cfg, sup, gh, ui, "1.1.0").Handler())
+	app := New(cfg, sup, gh, ui, "1.1.0")
+	for _, opt := range opts {
+		opt(app)
+	}
+	srv := httptest.NewServer(app.Handler())
 	t.Cleanup(func() {
 		srv.Close()
 		sup.Stop(false)
@@ -113,7 +117,7 @@ func TestThePageIsOpenWithoutAPassword(t *testing.T) {
 	if code, body := call(t, c, "GET", s.url+"/api/state", ""); code != 200 || !strings.Contains(body, `"repos":[]`) {
 		t.Fatalf("%d %s", code, body)
 	}
-	if code, body := call(t, c, "GET", s.url+"/api/session", ""); code != 200 || body != "{\"locked\":false,\"signedIn\":true}\n" {
+	if code, body := call(t, c, "GET", s.url+"/api/session", ""); code != 200 || body != "{\"homeOnly\":false,\"locked\":false,\"signedIn\":true}\n" {
 		t.Fatalf("%d %s", code, body)
 	}
 	if code, body := call(t, c, "GET", s.url+"/", ""); code != 200 || !strings.Contains(body, "GitHub-Runner") {
@@ -161,7 +165,7 @@ func TestAPasswordLocksThePage(t *testing.T) {
 	if code, _ := call(t, stranger, "POST", s.url+"/api/repos", `{"repo":"you/x"}`); code != 401 {
 		t.Errorf("a locked page took a change: %d", code)
 	}
-	if _, body := call(t, stranger, "GET", s.url+"/api/session", ""); body != "{\"locked\":true,\"signedIn\":false}\n" {
+	if _, body := call(t, stranger, "GET", s.url+"/api/session", ""); body != "{\"homeOnly\":false,\"locked\":true,\"signedIn\":false}\n" {
 		t.Errorf("session: %s", body)
 	}
 	if code, body := call(t, stranger, "POST", s.url+"/api/login", `{"password":"wrong"}`); code != 401 || errorOf(t, body) != "That is not the password set for this page." {
@@ -216,16 +220,84 @@ func TestRemovingThePasswordOpensThePage(t *testing.T) {
 	}
 }
 
-func TestRepeatedWrongPasswordsAreRefusedForAWhile(t *testing.T) {
-	s := newSite(t, nil)
+func TestWrongPasswordsAreAnsweredMoreSlowly(t *testing.T) {
+	var waits []time.Duration
+	s := newSite(t, nil, func(srv *Server) { srv.sleep = func(d time.Duration) { waits = append(waits, d) } })
 	call(t, client(t), "PUT", s.url+"/api/password", `{"password":"right"}`)
 	c := client(t)
-	for range maxFails {
+	for range 8 {
+		if code, _ := call(t, c, "POST", s.url+"/api/login", `{"password":"wrong"}`); code != 401 {
+			t.Fatalf("a wrong password got %d", code)
+		}
+	}
+	if len(waits) == 0 || waits[len(waits)-1] != maxDelay {
+		t.Fatalf("waits = %v", waits)
+	}
+	for i := 1; i < len(waits); i++ {
+		if waits[i] < waits[i-1] {
+			t.Fatalf("the delay shrank: %v", waits)
+		}
+	}
+}
+
+func TestTheRightPasswordAlwaysGetsThrough(t *testing.T) {
+	s := newSite(t, nil, func(srv *Server) { srv.sleep = func(time.Duration) {} })
+	call(t, client(t), "PUT", s.url+"/api/password", `{"password":"right"}`)
+	c := client(t)
+	for range 20 {
 		call(t, c, "POST", s.url+"/api/login", `{"password":"wrong"}`)
 	}
-	if code, body := call(t, c, "POST", s.url+"/api/login", `{"password":"right"}`); code != 429 || !strings.Contains(errorOf(t, body), "Wait a few minutes") {
+	if code, body := call(t, c, "POST", s.url+"/api/login", `{"password":"right"}`); code != 204 {
 		t.Fatalf("%d %s", code, body)
 	}
+}
+
+func TestFailuresCountPerClientBehindAProxy(t *testing.T) {
+	var waits []time.Duration
+	s := newSite(t, nil, func(srv *Server) { srv.sleep = func(d time.Duration) { waits = append(waits, d) } })
+	call(t, client(t), "PUT", s.url+"/api/password", `{"password":"right"}`)
+	c := client(t)
+	for range 8 {
+		call(t, c, "POST", s.url+"/api/login", `{"password":"wrong"}`, "X-Forwarded-For", "203.0.113.7")
+	}
+	waits = nil
+	call(t, c, "POST", s.url+"/api/login", `{"password":"wrong"}`, "X-Forwarded-For", "198.51.100.9")
+	if len(waits) != 0 {
+		t.Fatalf("another client behind the same proxy was slowed down: %v", waits)
+	}
+}
+
+func TestWithoutAPasswordOnlyLocalAddressesGetIn(t *testing.T) {
+	s := newSite(t, map[string]string{"ACCESS_TOKEN": "x"})
+	for _, host := range []string{"192.168.1.10:8080", "[::1]:8080", "localhost:8080", "tower:8080", "tower.local:8080", "nas.lan", "box.home.arpa", "runner.internal"} {
+		if code := callHost(t, s.url+"/api/state", host); code != 200 {
+			t.Errorf("%s got %d", host, code)
+		}
+	}
+	for _, host := range []string{"rebind.example.com", "runner.example.com:443"} {
+		if code := callHost(t, s.url+"/api/state", host); code != 403 {
+			t.Errorf("%s got %d", host, code)
+		}
+	}
+	call(t, client(t), "PUT", s.url+"/api/password", `{"password":"right"}`)
+	if code := callHost(t, s.url+"/api/session", "runner.example.com"); code != 200 {
+		t.Errorf("with a password the page under a domain got %d", code)
+	}
+}
+
+func callHost(t *testing.T, url, host string) int {
+	t.Helper()
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = host
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
 }
 
 func TestCrossSiteWritesAreRefused(t *testing.T) {

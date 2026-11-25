@@ -59,7 +59,7 @@ export interface Toast {
 }
 
 export interface State {
-  phase: 'loading' | 'locked' | 'ready'
+  phase: 'loading' | 'locked' | 'homeOnly' | 'ready'
   connected: boolean
   now: number
   repos: Repo[]

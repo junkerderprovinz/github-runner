@@ -125,7 +125,8 @@ function listen() {
 
 export async function start() {
   try {
-    const session = await call<{ locked: boolean; signedIn: boolean }>('GET', 'session')
+    const session = await call<{ locked: boolean; signedIn: boolean; homeOnly: boolean }>('GET', 'session')
+    if (session.homeOnly) return set({ phase: 'homeOnly' })
     if (!session.signedIn) return lock()
     await load()
     listen()

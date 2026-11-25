@@ -30,10 +30,11 @@ type Server struct {
 	version  string
 	sessions *sessions
 	now      func() time.Time
+	sleep    func(time.Duration)
 }
 
 func New(cfg *config.Store, sup *runner.Supervisor, gh TokenSource, ui fs.FS, version string) *Server {
-	return &Server{cfg: cfg, sup: sup, gh: gh, ui: ui, version: version, sessions: newSessions(), now: time.Now}
+	return &Server{cfg: cfg, sup: sup, gh: gh, ui: ui, version: version, sessions: newSessions(), now: time.Now, sleep: time.Sleep}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -76,13 +77,18 @@ func (s *Server) locked() bool {
 
 func (s *Server) signedIn(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.locked() && !s.sessions.valid(r) {
+		switch {
+		case s.locked() && !s.sessions.valid(r):
 			fail(w, http.StatusUnauthorized, "Sign in first.")
-			return
+		case !s.locked() && !homeHost(r.Host):
+			fail(w, http.StatusForbidden, homeOnly)
+		default:
+			h.ServeHTTP(w, r)
 		}
-		h.ServeHTTP(w, r)
 	})
 }
+
+const homeOnly = "Without a password, GitHub-Runner only answers on addresses of your own network. Open it by its IP address and set a password first."
 
 func reply(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -115,7 +121,11 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	locked := s.locked()
-	reply(w, http.StatusOK, map[string]bool{"locked": locked, "signedIn": !locked || s.sessions.valid(r)})
+	reply(w, http.StatusOK, map[string]bool{
+		"locked":   locked,
+		"signedIn": !locked || s.sessions.valid(r),
+		"homeOnly": !locked && !homeHost(r.Host),
+	})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -130,16 +140,17 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if s.sessions.blocked(r) {
-		fail(w, http.StatusTooManyRequests, "That was wrong a few times. Wait a few minutes, then try again.")
-		return
-	}
+	client := clientOf(r)
+	done := s.sessions.checking(client)
+	defer done()
 	if !checkPassword(hash, body.Password) {
-		s.sessions.failed(r)
+		if wait := s.sessions.failed(client); wait > 0 {
+			s.sleep(wait)
+		}
 		fail(w, http.StatusUnauthorized, "That is not the password set for this page.")
 		return
 	}
-	s.sessions.forgive(r)
+	s.sessions.forgive(client)
 	s.sessions.start(w, r)
 	w.WriteHeader(http.StatusNoContent)
 }

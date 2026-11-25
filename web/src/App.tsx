@@ -59,12 +59,25 @@ function SignIn() {
   )
 }
 
+function HomeOnly() {
+  return (
+    <main className="signin">
+      <div className="signin-box">
+        <Logo size={56} />
+        <h1>GitHub-Runner</h1>
+        <p>Without a password, GitHub-Runner only answers on addresses of your own network, so no website can reach it behind your back.</p>
+        <p>Open it by its IP address, for example http://192.168.1.10:8080, and set a password under Settings, Security. After that it works under this address too.</p>
+      </div>
+    </main>
+  )
+}
+
 export function App() {
   const { phase } = useStore()
   useEnvironment()
   return (
     <div className="world">
-      {phase === 'locked' ? <SignIn /> : phase === 'ready' ? <LineMap /> : null}
+      {phase === 'locked' ? <SignIn /> : phase === 'homeOnly' ? <HomeOnly /> : phase === 'ready' ? <LineMap /> : null}
       <Toasts />
     </div>
   )

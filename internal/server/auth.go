@@ -17,8 +17,9 @@ import (
 const (
 	cookieName  = "github_runner_session"
 	sessionLife = 30 * 24 * time.Hour
-	maxFails    = 5
 	failWindow  = 15 * time.Minute
+	freeFails   = 3
+	maxDelay    = 10 * time.Second
 )
 
 // The parameters are OWASP's smallest recommended set for argon2id. A sign-in
@@ -62,14 +63,15 @@ func checkPassword(encoded, password string) bool {
 
 // sessions lives in memory, so a restart of the container signs everyone out.
 type sessions struct {
-	mu    sync.Mutex
-	now   func() time.Time
-	open  map[string]time.Time
-	fails map[string][]time.Time
+	mu     sync.Mutex
+	now    func() time.Time
+	open   map[string]time.Time
+	fails  map[string][]time.Time
+	checks map[string]*sync.Mutex
 }
 
 func newSessions() *sessions {
-	return &sessions{now: time.Now, open: map[string]time.Time{}, fails: map[string][]time.Time{}}
+	return &sessions{now: time.Now, open: map[string]time.Time{}, fails: map[string][]time.Time{}, checks: map[string]*sync.Mutex{}}
 }
 
 func (s *sessions) start(w http.ResponseWriter, r *http.Request) {
@@ -119,25 +121,38 @@ func (s *sessions) endAll() {
 	s.mu.Unlock()
 }
 
-// blocked reports whether this client got the password wrong too often in
-// the last minutes.
-func (s *sessions) blocked(r *http.Request) bool {
+// checking lets one password check run at a time per client, so sending many
+// in parallel does not get around the delay.
+func (s *sessions) checking(client string) func() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.recentFails(clientIP(r))) >= maxFails
+	m := s.checks[client]
+	if m == nil {
+		m = &sync.Mutex{}
+		s.checks[client] = m
+	}
+	s.mu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
-func (s *sessions) failed(r *http.Request) {
+// failed records a wrong password and returns how long to wait before
+// answering. The right password is never held back, so nobody can lock the
+// owner out by guessing.
+func (s *sessions) failed(client string) time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ip := clientIP(r)
-	s.fails[ip] = append(s.recentFails(ip), s.now())
+	fails := append(s.recentFails(client), s.now())
+	s.fails[client] = fails
+	if len(fails) < freeFails {
+		return 0
+	}
+	return min(time.Second<<(len(fails)-freeFails), maxDelay)
 }
 
-func (s *sessions) forgive(r *http.Request) {
+func (s *sessions) forgive(client string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.fails, clientIP(r))
+	delete(s.fails, client)
 }
 
 // recentFails drops failures outside the window. The caller holds s.mu.
@@ -157,12 +172,43 @@ func (s *sessions) recentFails(ip string) []time.Time {
 	return recent
 }
 
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+// clientOf names who is signing in. Behind a reverse proxy in the own network
+// every visitor arrives from the proxy, so the address it forwards counts.
+func clientOf(r *http.Request) string {
+	peer, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		peer = r.RemoteAddr
 	}
-	return host
+	if ip := net.ParseIP(peer); ip == nil || !(ip.IsLoopback() || ip.IsPrivate()) {
+		return peer
+	}
+	forwarded := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(forwarded) - 1; i >= 0; i-- {
+		addr := strings.TrimSpace(forwarded[i])
+		if ip := net.ParseIP(addr); ip != nil && !ip.IsLoopback() && !ip.IsPrivate() {
+			return addr
+		}
+	}
+	return peer
+}
+
+// homeHost reports whether the page was opened by an address of the own
+// network. Without a password only those are answered, so a website cannot
+// reach the API through DNS rebinding.
+func homeHost(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+	if net.ParseIP(host) != nil || host == "localhost" || !strings.Contains(host, ".") {
+		return true
+	}
+	for _, suffix := range []string{".local", ".lan", ".home.arpa", ".internal"} {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func overTLS(r *http.Request) bool {
