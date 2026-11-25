@@ -9,6 +9,7 @@ REPO = "github-runner"
 
 BUTTONS = {
     "unraid": "https://ca.unraid.net/apps?q=github-runner",
+    "mos": "https://mos-official.net/apps.html?search=GitHub-Runner",
     "compose": "https://raw.githubusercontent.com/junkerderprovinz/github-runner/main/compose.yaml",
     "source": "https://github.com/junkerderprovinz/github-runner/releases/latest",
 }
