@@ -64,7 +64,7 @@ const logSize = 500
 
 type GitHub interface {
 	RunnerToken(ctx context.Context, repo, kind string) (string, error)
-	ActiveJob(ctx context.Context, repo, runner string) (github.Run, bool, error)
+	FindJob(ctx context.Context, repo, runner, job string, started time.Time) (github.Run, bool, error)
 }
 
 type Paths struct {
@@ -519,7 +519,9 @@ func (s *Supervisor) runnerLine(ctx context.Context, r *runner, line string) {
 	case jobStarted:
 		s.startJob(ctx, r, e.job)
 	case jobEnded:
-		s.closeJob(r, e.result)
+		if j, ok := s.closeJob(r, e.result); ok && j.Workflow == "" {
+			go s.findRun(ctx, r, j)
+		}
 	}
 }
 
@@ -531,15 +533,15 @@ func (s *Supervisor) startJob(ctx context.Context, r *runner, name string) {
 	}
 	s.update(r, func(st *State) { *st = State{Status: StatusBusy, Since: j.Started, Job: &j} })
 	s.Emit(Event{Type: "job", Data: j})
-	go s.findRun(ctx, r, j.ID)
+	go s.findRun(ctx, r, j)
 }
 
-func (s *Supervisor) closeJob(r *runner, result string) {
+func (s *Supervisor) closeJob(r *runner, result string) (Job, bool) {
 	s.mu.Lock()
 	open := r.state.Job
 	s.mu.Unlock()
 	if open == nil {
-		return
+		return Job{}, false
 	}
 	now := s.now()
 	j, err := s.hist.update(open.ID, func(j *Job) { j.Ended, j.Result = now, result })
@@ -548,20 +550,21 @@ func (s *Supervisor) closeJob(r *runner, result string) {
 	}
 	s.update(r, func(st *State) { *st = State{Status: StatusIdle, Since: now} })
 	s.Emit(Event{Type: "job", Data: j})
+	return j, true
 }
 
 // findRun asks GitHub which workflow and branch the job belongs to, since
 // the runner only prints the job's name. A token without Actions read
 // access ends the search quietly.
-func (s *Supervisor) findRun(ctx context.Context, r *runner, id int64) {
-	name := s.cfg.Get().Name
+func (s *Supervisor) findRun(ctx context.Context, r *runner, job Job) {
+	id, name := job.ID, s.cfg.Get().Name
 	for range 3 {
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(s.lookupDelay):
 		}
-		run, found, err := s.gh.ActiveJob(ctx, r.name, name)
+		run, found, err := s.gh.FindJob(ctx, r.name, name, job.Name, job.Started)
 		if err != nil {
 			return
 		}

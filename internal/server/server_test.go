@@ -34,7 +34,7 @@ func (f *fakeGitHub) RunnerToken(_ context.Context, repo, kind string) (string, 
 	return "TOKEN", nil
 }
 
-func (f *fakeGitHub) ActiveJob(context.Context, string, string) (github.Run, bool, error) {
+func (f *fakeGitHub) FindJob(context.Context, string, string, string, time.Time) (github.Run, bool, error) {
 	return github.Run{}, false, nil
 }
 

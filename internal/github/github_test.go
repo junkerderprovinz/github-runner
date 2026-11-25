@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunnerTokenSendsTheAccessToken(t *testing.T) {
@@ -58,26 +59,30 @@ func TestNoTokenAsksNothing(t *testing.T) {
 	}
 }
 
-func TestActiveJobFindsTheRunnersJob(t *testing.T) {
+func TestFindJobLooksAtEveryRecentRun(t *testing.T) {
+	started := time.Date(2026, 11, 25, 11, 28, 30, 0, time.UTC)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/repos/you/website/actions/runs":
-			w.Write([]byte(`{"workflow_runs":[{"id":1,"name":"CI","head_branch":"dev"},{"id":2,"name":"Deploy","head_branch":"main"}]}`))
-		case r.URL.Path == "/repos/you/website/actions/runs/1/jobs":
-			w.Write([]byte(`{"jobs":[{"runner_name":"other","status":"in_progress"}]}`))
-		case r.URL.Path == "/repos/you/website/actions/runs/2/jobs":
-			w.Write([]byte(`{"jobs":[{"runner_name":"GitHub-Runner","status":"completed"},{"runner_name":"GitHub-Runner","status":"in_progress","html_url":"https://github.com/you/website/actions/runs/2/job/9"}]}`))
+			if r.URL.Query().Get("status") != "" {
+				t.Errorf("the run list is filtered: %s", r.URL)
+			}
+			w.Write([]byte(`{"workflow_runs":[{"id":3,"name":"Demo","head_branch":"dev"},{"id":4,"name":"Old","head_branch":"main"}]}`))
+		case r.URL.Path == "/repos/you/website/actions/runs/3/jobs":
+			w.Write([]byte(`{"jobs":[{"name":"lint","runner_name":"other","started_at":"2026-11-25T11:28:30Z"},{"name":"lint","runner_name":"GitHub-Runner","status":"completed","started_at":"2026-11-25T11:28:31Z","html_url":"https://github.com/you/website/actions/runs/3/job/7"}]}`))
+		case r.URL.Path == "/repos/you/website/actions/runs/4/jobs":
+			w.Write([]byte(`{"jobs":[{"name":"lint","runner_name":"GitHub-Runner","started_at":"2026-11-25T09:00:00Z"}]}`))
 		default:
 			t.Errorf("unexpected %s", r.URL)
 		}
 	}))
 	defer srv.Close()
 
-	run, found, err := New(srv.URL, func() string { return "x" }).ActiveJob(context.Background(), "you/website", "GitHub-Runner")
+	run, found, err := New(srv.URL, func() string { return "x" }).FindJob(context.Background(), "you/website", "GitHub-Runner", "lint", started)
 	if err != nil || !found {
 		t.Fatalf("found %v, err %v", found, err)
 	}
-	if run.Workflow != "Deploy" || run.Branch != "main" || !strings.HasSuffix(run.URL, "/job/9") {
+	if run.Workflow != "Demo" || run.Branch != "dev" || !strings.HasSuffix(run.URL, "/job/7") {
 		t.Errorf("run = %+v", run)
 	}
 }

@@ -84,7 +84,7 @@ writeFileSync(join(config, "history.json"), JSON.stringify({
 }));
 
 // you/notes gets the refusal a token without administration rights gets.
-const flows = { "you/website": ["Deploy", "main"], "you/homelab": ["Nightly", "main"] };
+const flows = { "you/website": ["Deploy", "main", "deploy"], "you/homelab": ["Nightly", "main", "backup-check"] };
 const reply = (res, code, body) => res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify(body));
 const github = http.createServer((req, res) => {
   const path = new URL(req.url, "http://x").pathname;
@@ -97,7 +97,8 @@ const github = http.createServer((req, res) => {
     return reply(res, 200, { workflow_runs: [{ id: 1, name, head_branch: branch }] });
   }
   if ((m = path.match(/^\/repos\/([^/]+\/[^/]+)\/actions\/runs\/1\/jobs$/))) {
-    return reply(res, 200, { jobs: [{ runner_name: "GitHub-Runner", status: "in_progress" }] });
+    const [, , job] = flows[m[1]] ?? [];
+    return reply(res, 200, { jobs: [{ name: job, runner_name: "GitHub-Runner", status: "in_progress", started_at: new Date().toISOString() }] });
   }
   reply(res, 404, {});
 });

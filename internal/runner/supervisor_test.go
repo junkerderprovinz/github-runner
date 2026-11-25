@@ -40,11 +40,12 @@ while :; do sleep 0.1; done
 `
 
 type fakeGitHub struct {
-	mu      sync.Mutex
-	refuse  error
-	tokens  []string
-	run     github.Run
-	lookups int
+	mu        sync.Mutex
+	refuse    error
+	tokens    []string
+	run       github.Run
+	lookups   int
+	missFirst int
 }
 
 func (f *fakeGitHub) RunnerToken(ctx context.Context, repo, kind string) (string, error) {
@@ -60,10 +61,13 @@ func (f *fakeGitHub) RunnerToken(ctx context.Context, repo, kind string) (string
 	return strings.ToUpper(kind), nil
 }
 
-func (f *fakeGitHub) ActiveJob(context.Context, string, string) (github.Run, bool, error) {
+func (f *fakeGitHub) FindJob(context.Context, string, string, string, time.Time) (github.Run, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lookups++
+	if f.lookups <= f.missFirst {
+		return github.Run{}, false, nil
+	}
 	return f.run, f.run.Workflow != "", nil
 }
 
@@ -246,6 +250,21 @@ func TestJobsAreTrackedFromTheRunnerOutput(t *testing.T) {
 	}
 	if jobs[0].Workflow != "CI" || jobs[0].Branch != "main" {
 		t.Errorf("the workflow was not looked up: %+v", jobs[0])
+	}
+}
+
+func TestAWorkflowNotFoundDuringTheJobIsLookedUpAfterIt(t *testing.T) {
+	r := newRig(t, jobScript, "you/website")
+	r.gh.run = github.Run{Workflow: "CI", Branch: "main"}
+	r.gh.missFirst = 3
+	r.sup.Start()
+	r.waitFor(t, "idle after the job", func(s State) bool { return s.Status == StatusIdle && len(r.sup.Jobs()) == 1 })
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && r.sup.Jobs()[0].Workflow == "" {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := r.sup.Jobs()[0]; got.Workflow != "CI" {
+		t.Errorf("the workflow stayed unknown: %+v", got)
 	}
 }
 

@@ -63,7 +63,10 @@ type Run struct {
 
 // ActiveJob finds the in-progress job that runner picked up in repo. Found is
 // false while GitHub does not list it yet.
-func (c *Client) ActiveJob(ctx context.Context, repo, runner string) (run Run, found bool, err error) {
+// FindJob looks for the job a runner ran under the given name around the
+// given start. The run list is not filtered by status, because GitHub reports
+// a run as in progress only after a short delay, and the job may be over by then.
+func (c *Client) FindJob(ctx context.Context, repo, runner, job string, started time.Time) (run Run, found bool, err error) {
 	var runs struct {
 		Runs []struct {
 			ID     int64  `json:"id"`
@@ -71,22 +74,23 @@ func (c *Client) ActiveJob(ctx context.Context, repo, runner string) (run Run, f
 			Branch string `json:"head_branch"`
 		} `json:"workflow_runs"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/actions/runs?status=in_progress&per_page=20", &runs); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/repos/"+repo+"/actions/runs?per_page=10", &runs); err != nil {
 		return Run{}, false, err
 	}
 	for _, r := range runs.Runs {
 		var jobs struct {
 			Jobs []struct {
-				Runner string `json:"runner_name"`
-				Status string `json:"status"`
-				URL    string `json:"html_url"`
+				Name    string    `json:"name"`
+				Runner  string    `json:"runner_name"`
+				Started time.Time `json:"started_at"`
+				URL     string    `json:"html_url"`
 			} `json:"jobs"`
 		}
 		if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/actions/runs/%d/jobs?per_page=100", repo, r.ID), &jobs); err != nil {
 			return Run{}, false, err
 		}
 		for _, j := range jobs.Jobs {
-			if j.Runner == runner && j.Status == "in_progress" {
+			if j.Runner == runner && j.Name == job && j.Started.Sub(started).Abs() < 2*time.Minute {
 				return Run{Workflow: r.Name, Branch: r.Branch, URL: j.URL}, true, nil
 			}
 		}
