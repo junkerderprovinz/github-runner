@@ -12,6 +12,7 @@ BUTTONS = {
     "mos": "https://mos-official.net/apps.html?search=GitHub-Runner",
     "zimaos": "https://github.com/junkerderprovinz/zimaos-apps#install",
     "umbrel": "https://github.com/junkerderprovinz/umbrel-apps#install",
+    "truenas-yaml": "https://github.com/junkerderprovinz/truenas-apps#github-runner",
     "compose": "https://raw.githubusercontent.com/junkerderprovinz/github-runner/main/compose.yaml",
     "synology": "#synology",
     "qnap": "#qnap",
